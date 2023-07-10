@@ -133,7 +133,7 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, hp):
         valid_dataloader = DataLoader(dataset=valid_dataset, batch_size=100, shuffle=False, drop_last=False) 
     n_total_steps = len(training_dataloader)
 
-    # - hyperparameters
+    # - hyperparameters -- defined by passed in hp argumeent 
     # -- entire model
     width = num_windows
     learning_rate = 0.001
@@ -141,18 +141,33 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, hp):
     batch_size = 100
     n_batches = int(num_rows / batch_size) # technically don't need here 
     num_features = 5
+
     # -- mlp 
-    # num_hidden_layers = 2
-    # hidden_layer_units = {"first": 625, "second": 125}
-    hidden_layer_units = {"first": 120, "second": 84}
-    # -- cnn 
-    # num_filters = 50
-    num_filters = 20
-    # filter_size = 10
-    filter_size = 5
-    # pool_size = 5
-    pool_size = 2
-    # -- unused parameters
+    if hp_specs == 4: 
+        # -- mlp -- num_hidden_layers = 2
+        hidden_layer_units = {"first": 625, "second": 125}
+        # -- cnn -- set the specific options 
+        num_filters = 50
+        filter_size = 10 
+        pool_size = 5 
+    else:
+        # -- mlp -- num_hidden_layers = 2 
+        # hidden_layer_units = {"first": 120, "second": 84}
+        hidden_layer_units = {"first": 625, "second": 125}
+        # -- cnn -- set the general options 
+        num_filters = 50
+        # -- cnn -- set the specific options 
+        if hp_specs == 1: 
+            filter_size = 5
+            pool_size = 2
+        elif hp_specs == 2: 
+            filter_size = 5
+            pool_size = 5
+        elif hp_specs == 3:
+            filter_size = 10 
+            pool_size = 2
+
+    # -- unused parameters 
     num_inputs = num_features * width # should just be the size of each gene sample
     num_outputs = 2 
     stride_length = 1
@@ -169,30 +184,29 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, hp):
             self.fc2 = nn.Linear(hidden_layer_units["first"], hidden_layer_units["second"])
             self.fc3 = nn.Linear(hidden_layer_units["second"], 1)
         def forward(self, x): 
-            print('very first input: ', x.unsqueeze(0).shape)
+            # print('very first input: ', x.unsqueeze(0).shape)
             x = self.conv(x)
-            print('first conv layer: ', x.shape)
+            # print('first conv layer: ', x.shape)
             x = F.relu(x)
-            print('first relu: ', x.shape)
+            # print('first relu: ', x.shape)
             x = self.pool(x)
-            print('max pooling: ', x.shape)
+            # print('max pooling: ', x.shape)
             x = x.view(math.ceil((width-filter_size)/pool_size)*num_filters)
-            print('flattened: ', x.unsqueeze(0).shape)
+            # print('flattened: ', x.unsqueeze(0).shape)
             x = self.dropout(x)
-            print('dropout: ', x.unsqueeze(0).shape)
+            # print('dropout: ', x.unsqueeze(0).shape)
             x = self.fc1(x)
             x = F.relu(x)
-            print('second relu + first linear: ', x.unsqueeze(0).shape)
+            # print('second relu + first linear: ', x.unsqueeze(0).shape)
             x = self.fc2(x)
             x = F.relu(x)
-            print('third relu + second linear: ', x.unsqueeze(0).shape)
+            # print('third relu + second linear: ', x.unsqueeze(0).shape)
             x = self.fc3(x) 
-            print('last linear: ', x.unsqueeze(0).shape)
+            # print('last linear: ', x.unsqueeze(0).shape)
             return x
 
     # -- create instance of model, create loss and optimization functions 
     model = ConvNet().to(device)
-    # criterion = nn.BCELoss() 
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weights))
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer=optimizer, factor=1e-7)
@@ -350,11 +364,11 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, hp):
                 # -- calculate average validation loss for each epoch 
                 vt_loss = sum(vt_loss_per_batch) / len(vt_loss_per_batch)
                 log['vt_loss_per_epoch'].append(vt_loss)
-                print('Validation loss', vt_loss)
+                # print('Validation loss', vt_loss)
                 # -- calculate validation accuracy -- rough approx -- for each epoch 
                 vt_accuracy = vt_n_correct / n_samples
                 log['vt_accuracy_per_epoch'].append(vt_accuracy)
-                print('Validation accuracy: ', vt_accuracy)
+                # print('Validation accuracy: ', vt_accuracy)
                 # -- calculate end time and elapsed time for evaluation, appending to list 
                 e_end = time.time()
                 e_elapsed = e_end - e_start
@@ -386,10 +400,13 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, hp):
                 o_dir=output_dir)
         # -- print the average time elapsed to train the model
         total_training_time = round(sum(training_time_list) / 60, 2)
-        print(f'total time for training is: {total_training_time} seconds')
+        print(f'total time for training is: {total_training_time} minutes')
         total_evaluation_time = round(sum(evaluation_time_list) / 60, 2)
-        print(f'total time for evaluation is: {total_evaluation_time} seconds')
-        print(f'total time for training and evaluating the model is: {round(total_training_time + total_evaluation_time, 2)} seconds')
+        print(f'total time for evaluation is: {total_evaluation_time} minutes')
+        print(f'total time for training and evaluating the model is: {round(total_training_time + total_evaluation_time, 2)} minutes')
+        # -- for debugging purposes 
+        # print('cell type: ', cell_type)
+        # print('auc', auc)
         # -- return the auc obtained through the evaluate function
         return auc 
     
@@ -398,13 +415,14 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, hp):
     # -- return the final_auc value as the value that it was set equal to from the evaluate function 
     return final_auc
 
-# -- function for plotting the final list of aucs for each cell type 
-def plot_final_aucs(auc_list, cell_type_list, o_dir):
-    fig, ax = plt.subplots(figsize=(7,5))
+# -- FIGURE 3: function for plotting the final list of aucs for each cell type 
+def plot_final_aucs(auc_df, o_dir):
+    fig, ax = plt.subplots(figsize=(8,5))
     fig.suptitle('AUC Scores For All Cell Types')
-    ax.bar(cell_type_list, auc_list)
+    ax.bar('cells', 'auc', data=auc_df)
     ax.set_xlabel('Cell Types')
     ax.set_ylabel('AUC Score')
+    plt.xticks(rotation=90, fontsize=7)
     # -- save the consolidated file into a sub directory if specified as such 
     if o_dir != 'SHOW':
         plt.savefig(f'{o_dir}/final_aucs.png')
@@ -424,7 +442,7 @@ def main():
     parser.add_argument('-s', type=str, help='-> input Y or N', nargs=1)
     parser.add_argument('-o', type=str, help='-> input filepath of directory to save results to', nargs=1)
     parser.add_argument('-e', type=int, help='-> input number of epochs you want to run the model for', nargs=1)
-    parser.add_argument('-hp', type=int, help='-> input 1 for (5,2) 2 for (5,5) or 3 for (10,2) to specify hp', nargs=1)
+    parser.add_argument('-hp', type=int, help='-> input 1 for (5,2) 2 for (5,5) 3 for (10,2) 4 for (10,5) to specify hp')
     # -- parse all the args -> list format 
     args = vars(parser.parse_args())
     # -- parse where the data directory is 
@@ -452,7 +470,7 @@ def main():
                         c_type=all_cell_types[i],
                         o_dir=output_directory, 
                         n_epochs=args['e'][0], 
-                        hp=args['hp'][0])
+                        hp=args['hp'])
         elif args['tv'][0] == 'test': # -- check if test over valid dataset 
             auc = run_all(tr_ds=f'{dirs}/train.csv', 
                         te_ds=f'{dirs}/valid.csv', 
@@ -460,14 +478,16 @@ def main():
                         c_type=all_cell_types[i],
                         o_dir=output_directory,
                         n_epochs=args['e'][0],
-                        hp=args['hp'][0])
+                        hp=args['hp'])
         auc_list.append(round(auc, 3))
         i+=1
     # -- finish off my plotting the final auc graph and stdout the max, min, mean of the AUCs
     print('max of auc list is: ', max(auc_list))
     print('min of auc list is: ', min(auc_list))
     print('mean of auc list is: ', round(sum(auc_list) / len(auc_list), 2))
-    plot_final_aucs(auc_list=auc_list, cell_type_list=all_cell_types, o_dir=output_directory)
+    auc_df = pd.DataFrame(dict(cells = all_cell_types, auc = auc_list))
+    auc_sorted_df = auc_df.sort_values('auc', ascending=False)
+    plot_final_aucs(auc_df=auc_sorted_df, o_dir=output_directory)
 
 if __name__ == '__main__':
     main()
