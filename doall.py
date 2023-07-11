@@ -18,8 +18,8 @@ import argparse as ap
 def parse_in(tr_ds, vt_ds, test_or_valid, o_dir, c_type, n_epochs, hp, mp): 
     # -- set the right parameters
     # global training_ds, valid_training_ds, output_dir, cell_type, hp_specs, model_path, n_e 
-    training_ds, valid_training_ds, test_or_valid, output_dir, cell_type, hp_specs, model_path, n_e = tr_ds, vt_ds, test_or_valid, o_dir, c_type, hp, mp, n_epochs
-    return training_ds, valid_training_ds, test_or_valid, output_dir, cell_type, hp_specs, model_path, n_e
+    training_ds, valid_testing_ds, test_or_valid, output_dir, cell_type, hp_specs, model_path, n_e = tr_ds, vt_ds, test_or_valid, o_dir, c_type, hp, mp, n_epochs
+    return training_ds, valid_testing_ds, test_or_valid, output_dir, cell_type, hp_specs, model_path, n_e
 
 def set_device():
     # global device
@@ -202,7 +202,7 @@ def model_loss_optim(width, num_filters, filter_size, pool_size, hidden_layer_un
     return model, criterion, optimizer, scheduler
 
 # -- plot literally everything
-def plot_all(num_epochs, cell_type, output_dir, training_loss, 
+def plot_all(num_epochs, cell_type, training_loss, 
              training_accuracy, test_or_valid, vt_loss, 
              vt_accuracy, tpr, fpr, auc, df_cm, o_dir):
 
@@ -239,7 +239,7 @@ def plot_all(num_epochs, cell_type, output_dir, training_loss,
     a[1,1].set_title('Confusion Matrix')
     # -- save the consolidated file into a sub directory if specified as such 
     if o_dir != 'DELETE':
-        plt.savefig(f'{output_dir}/{cell_type}.png')
+        plt.savefig(f'{o_dir}/{cell_type}.png')
 
 def train_model(model, cell_type, num_epochs, num_genes, training_dataloader, device, criterion, optimizer, n_total_steps, scheduler, model_path):
 
@@ -297,20 +297,20 @@ def train_model(model, cell_type, num_epochs, num_genes, training_dataloader, de
     
     # -- save the model 
     if model_path != '': 
-        PATH = f'./{model_path}/{cell_type}_params.pth'
-        torch.save(model.state_dict, PATH) # -- save the model's params 
+        PATH = f'{model_path}/{cell_type}_params.pth'
+        torch.save(model.state_dict(), PATH) # -- save the model's params 
 
     return training_time_list, log, PATH
 
-def test_model(m, saved_model_path, vt_dataloader, device, criterion, num_genes, num_epochs, log):
-
+def test_model(m, saved_model_path, vt_dataloader, device, criterion, num_genes, num_epochs, log): 
     target_scores = []
     cm_scores = []
     predicted_scores = []
     evaluation_time_list = []
 
+    state_dict = torch.load(saved_model_path)
     model = m # -- load the structure of the model 
-    model.load_state_dict(torch.load(saved_model_path)) # -- load the trained model from method before 
+    model.load_state_dict(state_dict)
     model.eval() # -- switch modes for layers that act diff
    
     for epoch in range(num_epochs):
@@ -356,7 +356,7 @@ def test_model(m, saved_model_path, vt_dataloader, device, criterion, num_genes,
 
     return target_scores, predicted_scores, cm_scores, evaluation_time_list, log
 
-def plot_all(target_s, predicted_s, cm_scores, num_epochs, log, output_dir, test_or_valid): 
+def final_out(target_s, predicted_s, cm_scores, num_epochs, log, test_or_valid, cell_type, o_dir): 
 
     # -- set necessary globals for downstream plotting 
     # global fpr, tpr, auc, df_cm
@@ -374,9 +374,10 @@ def plot_all(target_s, predicted_s, cm_scores, num_epochs, log, output_dir, test
 
     plot_all(num_epochs=np.linspace(1, num_epochs, num=num_epochs).astype(int),
             test_or_valid=test_or_valid, 
+            cell_type=cell_type,
             training_loss=log['training_loss_per_epoch'], vt_loss=log['vt_loss_per_epoch'], 
             training_accuracy=log['training_accuracy_per_epoch'], vt_accuracy=log['vt_accuracy_per_epoch'], 
-            tpr=tpr, fpr=fpr, auc=auc, df_cm=df_cm, o_dir=output_dir)
+            tpr=tpr, fpr=fpr, auc=auc, df_cm=df_cm, o_dir=o_dir)
 
     # -- plot everything then just return the auc 
     return auc
@@ -403,22 +404,25 @@ def plot_final_aucs(auc_df, o_dir):
 
 def main():
     parser = ap.ArgumentParser(prog='Reimplementation of Deepchrome!', description='[1] Written in Pytorch. [2] All files must be titled train.csv, test.csv, or valid.csv. [3] All cell types should have respective directory named after them.')
-    parser.add_argument('-d', type=str, help='-> input filepath of the dataset directory to use', nargs=1)
+    parser.add_argument('-d', type=str, help='-> input name of folder to use for processing in data', nargs=1)
     parser.add_argument('-tv', type=str, help='-> input test or valid', nargs=1)
-    parser.add_argument('-s', type=str, help='-> input Y or N', nargs=1)
-    parser.add_argument('-o', type=str, help='-> input filepath of directory to save results to', nargs=1)
+    parser.add_argument('-s', type=str, help='-> input Y or N for saving results or not', nargs=1)
+    parser.add_argument('-o', type=str, help='-> input name of folder to save results to', nargs=1)
     parser.add_argument('-e', type=int, help='-> input number of epochs you want to run the model for', nargs=1)
     parser.add_argument('-hp', type=int, help='-> input 1 for (5,2) 2 for (5,5) 3 for (10,2) 4 for (10,5) to specify hp',default=4)
-    parser.add_argument('-mp', type=str, help='-> input name of folder to save model to when finished',default='')
+    parser.add_argument('-sm', type=str, help='-> input name of folder to save model to when finished',default='')
     args = vars(parser.parse_args()) # -- .parse_args() must be called for help message to be shown
 
     # -- set up workflow proper: 
     data_directory = args['d'][0]
-    output_directory = args['o'][0] if args['s'][0] == 'Y' else 'DELETE'
+    if args['s'][0] == 'Y': 
+        output_directory = args['o'][0]
+    else:
+         output_directory ='DELETE'
     test_or_valid = args['tv'][0]
     num_epochs = args['e'][0]
     hyperparams = args['hp']
-    model_path = args['mp']
+    model_path = args['sm']
 
     # -- recur down to the lowest level subdirectory, get the right filepath
     lowest_dirs = []
@@ -429,12 +433,11 @@ def main():
     all_cell_types = next(os.walk(data_directory))[1]
 
     # -- iterate through appended filepaths and run model => workflow 
-    marker=0
-    for dirs in lowest_dirs: 
-        training_ds, valid_training_ds, test_or_valid, output_dir, cell_type, hp_specs, model_path, n_e = parse_in(tr_ds=f'{dirs}/train.csv', vt_ds=f'{dirs}/{test_or_valid}.csv', test_or_valid=test_or_valid, c_type=all_cell_types[marker], o_dir=output_directory,n_epochs=num_epochs,hp=hyperparams,mp=model_path)
+    for index, dirs in enumerate(lowest_dirs): 
+        training_ds, valid_training_ds, test_or_valid, output_dir, cell_type, hp_specs, model_path, n_e = parse_in(tr_ds=f'{dirs}/train.csv', vt_ds=f'{dirs}/{test_or_valid}.csv', test_or_valid=test_or_valid, c_type=all_cell_types[index], o_dir=output_directory,n_epochs=num_epochs,hp=hyperparams,mp=model_path)
         device = set_device()
         # -- 1. check dimensions 
-        num_rows, num_cols, num_zeros, num_ones, marker, pos_weights, num_windows, num_genes = check_dimensions(training_ds=training_ds)
+        num_rows, num_cols, num_zeros, num_ones, i, pos_weights, num_windows, num_genes = check_dimensions(training_ds=training_ds)
         # -- 2. create datasets and dataloaders 
         training_dataset, training_dataloader, vt_dataset, vt_dataloader, n_total_steps = create_datasets_dataloaders(training_ds=training_ds, vt_ds=valid_training_ds, num_cols=num_cols, num_windows=num_windows)
         # -- 3. set the hyperparameters
@@ -442,15 +445,14 @@ def main():
         # -- 4. create model, loss criterion, optimizer, and lr scheduler 
         model, criterion, optimizer, scheduler = model_loss_optim(width=width, num_filters=num_filters, filter_size=filter_size, pool_size=pool_size, hidden_layer_units=hidden_layer_units, device=device, pos_weights=pos_weights, learning_rate=learning_rate)
         # -- 5. train and save the model 
-        training_time_list, log, saved_model_path = train_model(model=model, num_epochs=num_epochs, num_genes=num_genes, training_dataloader=training_dataloader, device=device, criterion=criterion, optimizer=optimizer, n_total_steps=n_total_steps, scheduler=scheduler, model_path=model_path)
+        training_time_list, log, saved_model_path = train_model(model=model, cell_type=all_cell_types[index], num_epochs=num_epochs, num_genes=num_genes, training_dataloader=training_dataloader, device=device, criterion=criterion, optimizer=optimizer, n_total_steps=n_total_steps, scheduler=scheduler, model_path=model_path)
         # -- 6. load and test the model 
         target_scores, predicted_scores, cm_scores, evaluation_time_list, log = test_model(m=model, saved_model_path=saved_model_path,vt_dataloader=vt_dataloader, device=device, criterion=criterion, num_genes=num_genes, num_epochs=num_epochs, log=log)
-        auc = plot_all(target_s=target_scores, predicted_s=predicted_scores, cm_scores=cm_scores, num_epochs=num_epochs, log=log, output_dir=output_directory)
+        auc = final_out(target_s=target_scores, predicted_s=predicted_scores, cell_type=all_cell_types[index], cm_scores=cm_scores, num_epochs=num_epochs, log=log, test_or_valid=test_or_valid, o_dir=output_directory)
         # -- 7. print final time elapsed model 
         time_out(training_time_list=training_time_list, evaluation_time_list=evaluation_time_list)
         # -- 8. add to final auc graph, update the marker for next iteration 
         auc_list.append(auc) 
-        marker+=1 
     # -- 9. print out max, min, mean auc and plot the final auc graph 
     print('max of auc list is: ', max(auc_list))
     print('min of auc list is: ', min(auc_list))
