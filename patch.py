@@ -23,13 +23,7 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
     cell_type = c_type
 
     # -- first set the device used
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("===================================")
     print(f"0. Using {device} device!")
 
@@ -241,10 +235,8 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
         a[1,1].set_title('Confusion Matrix')
 
         # -- save the consolidated file into a sub directory if specified as such 
-        if o_dir != 'SHOW':
+        if o_dir != 'DELETE':
             plt.savefig(f'{output_dir}/{cell_type}.png')
-        else:
-            plt.show()
 
     def evaluate():
 
@@ -289,8 +281,8 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
             for i, (samples, labels) in enumerate(training_dataloader):
                 
                 # -- set the samples 
-                samples = samples.to(device) 
                 samples = samples.permute(1, 0)
+                samples = samples.to(device) 
                 labels = torch.tensor([labels[0]]).float()
                 labels = labels.to(device)
 
@@ -313,8 +305,8 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
                 loss.backward() 
                 optimizer.step() 
 
-                if (i+1) % n_batches == 0: # -- this is where the i term above is used in for loop
-                    print (f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{n_total_steps}], Loss: {loss.item():.4f}')
+                # if (i+1) % n_batches == 0: # -- this is where the i term above is used in for loop
+                #     print (f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{n_total_steps}], Loss: {loss.item():.4f}')
             
             # -- step with the scheduler, update the lr 
             scheduler.step()
@@ -333,9 +325,11 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
             training_time_list.append(t_elapsed)
 
              # -- save the model if specified to do so
+            print('before', next(model.parameters()).device)
             if model_path != '': 
                 PATH = f'{model_path}/{cell_type}_params.pth'
             torch.save(model.state_dict(), PATH) # -- save the model's params 
+            print('after', next(model.parameters()).device)
 
             # -- switch the model to evaluation mode for specific layers -- dropout, etc 
             model.eval() 
@@ -355,8 +349,8 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
                 for i, (samples, labels) in enumerate(vt_dataloader):
                     
                     # -- set samples
-                    samples = samples.to(device) 
                     samples = samples.permute(1, 0)
+                    samples = samples.to(device) 
                     
                     # -- set labels 
                     labels = torch.tensor([labels[0]]).float()
@@ -389,12 +383,12 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
                 # -- calculate average validation loss for each epoch 
                 vt_loss = sum(vt_loss_per_batch) / len(vt_loss_per_batch)
                 log['vt_loss_per_epoch'].append(vt_loss)
-                print('Validation loss', vt_loss)
+                # print('Validation loss', vt_loss)
                 
                 # -- calculate validation accuracy -- rough approx -- for each epoch 
                 vt_accuracy = vt_n_correct / n_samples
                 log['vt_accuracy_per_epoch'].append(vt_accuracy)
-                print('Validation accuracy: ', vt_accuracy)
+                # print('Validation accuracy: ', vt_accuracy)
                 
                 # -- calculate end time and elapsed time for evaluation, appending to list 
                 e_end = time.time()
@@ -440,20 +434,18 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
     # -- return the final_auc value as the value that it was set equal to from the evaluate function 
     return final_auc
 
-def plot_final_aucs(auc_list, cell_type_list, o_dir):
-
-    # -- specs for graph 
-    fig, ax = plt.subplots(figsize=(7,5))
+def plot_final_aucs(auc_df, o_dir):
+    fig, ax = plt.subplots(figsize=(8,5))
     fig.suptitle('AUC Scores For All Cell Types')
-    ax.bar(cell_type_list, auc_list)
+    ax.bar('cells', 'auc', data=auc_df)
     ax.set_xlabel('Cell Types')
     ax.set_ylabel('AUC Score')
-    
-    # -- save file if specified to do so 
-    if o_dir != 'SHOW':
+    plt.xticks(rotation=90, fontsize=7)
+    plt.yticks(np.arange(0,1.1,0.1), fontsize=9)
+
+    # -- save the consolidated file into a sub directory if specified as such 
+    if o_dir != 'DELETE':
         plt.savefig(f'{o_dir}/final_aucs.png')
-    else:
-        plt.show()
 
 def main():
 
@@ -487,7 +479,7 @@ def main():
     if args['s'][0] == 'Y':  
         output_directory = args['o'][0] # -- the directory it should be saved to 
     else: 
-        output_directory = 'SHOW'
+        output_directory = 'DELETE'
 
     # -- recurses down to the lowest level subdirectory to retrieve filepaths for train.csv, test.csv, and/or valid.csv
     lowest_dirs = []
@@ -498,18 +490,22 @@ def main():
     all_cell_types = next(os.walk(data_directory))[1] # -- this obtains the cell types
 
     # -- iterate now through the directories and run the model on their respective data 
-    i=0
+    marker=0
     for dirs in lowest_dirs: 
         if args['tv'][0] == 'valid': # -- check if valid over test dataset 
-            auc = run_all(tr_ds=f'{dirs}/train.csv', v_ds=f'{dirs}/valid.csv', te_ds=None, c_type=all_cell_types[i], o_dir=output_directory, n_epochs=args['e'][0], model_path=model_path)
+            auc = run_all(tr_ds=f'{dirs}/train.csv', v_ds=f'{dirs}/valid.csv', te_ds=None, c_type=all_cell_types[marker], o_dir=output_directory, n_epochs=args['e'][0], model_path=model_path)
         elif args['tv'][0] == 'test': # -- check if test over valid dataset 
-            auc = run_all(tr_ds=f'{dirs}/train.csv', te_ds=f'{dirs}/valid.csv',  v_ds=None, c_type=all_cell_types[i], o_dir=output_directory, n_epochs=args['e'][0], model_path=model_path)
+            auc = run_all(tr_ds=f'{dirs}/train.csv', te_ds=f'{dirs}/valid.csv',  v_ds=None, c_type=all_cell_types[marker], o_dir=output_directory, n_epochs=args['e'][0], model_path=model_path)
         auc_list.append(round(auc, 3))
-        i+=1
+        marker+=1
     print('max of auc list is: ', max(auc_list))
     print('min of auc list is: ', min(auc_list))
     print('mean of auc list is: ', round(sum(auc_list) / len(auc_list), 2))
-    plot_final_aucs(auc_list=auc_list, cell_type_list=all_cell_types, o_dir=output_directory)
+
+    # -- add aucs to a df that is sorted 
+    auc_df = pd.DataFrame(dict(cells = all_cell_types, auc = auc_list))
+    auc_sorted_df = auc_df.sort_values('auc', ascending=False)
+    plot_final_aucs(auc_df=auc_sorted_df, o_dir=output_directory)
 
 if __name__ == '__main__':
     main()
