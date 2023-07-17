@@ -31,19 +31,27 @@ def load_data(ct, ds):
     num_zeros = 0
     num_ones = 0
 
+    # -- set entries for data
+    data[0] = []
+    data[1] = []
+
     for i in range(len(xy)):
         if xy[i][num_cols-1]==0:
             num_zeros += 1
         if xy[i][num_cols-1]==1:
             num_ones += 1
         if (i+1) % num_windows==0:
-            data[marker]=(xy[i-99:i+1,2:num_cols-1], xy[i-99:i+1,[num_cols-1]]) # features, labels
-            # print(data[marker][0][0], data[marker][1][0])
-            marker+=1 
+            if xy[i][num_cols-1]==0:
+                data[0].append((xy[i-99:i+1,2:num_cols-1], xy[i-99:i+1,[num_cols-1]]))
+            if xy[i][num_cols-1]==1:
+                data[1].append((xy[i-99:i+1,2:num_cols-1], xy[i-99:i+1,[num_cols-1]]))
 
     pos_weights = torch.tensor([num_zeros / num_ones])
-    num = random.randint(0,num_genes-1) # -- generate a random number from 0-(num_genes-1) in ds inclusive, -1 bc of indexing
-    inputs.append((ct, data[num])) # -- use cell type to mark each input 
+    random_zero_idx = random.randint(0, len(data[0])-1)
+    random_one_idx = random.randint(0, len(data[1])-1)
+    inputs.append(ct) # -- use cell type to mark each input 
+    inputs.append(data[0][random_zero_idx])
+    inputs.append(data[1][random_one_idx])
     # print(inputs[0][1][0][0])
     return inputs, pos_weights
 
@@ -106,10 +114,19 @@ def opt(inputs:list, pos_weights, num_epochs, model_path, device, width, num_fil
     loss_dict = {}
     expressions_dict = {}
 
+    # -- unpack inputs
+    ct = inputs[0]
+
+    # -- add in an empty list for the ct
+    outputs_dict[ct] = []
+    loss_dict[ct] = []
+    expressions_dict[ct] = []
+
     # -- create the model 
     model = ConvNet(width=width, num_filters=num_filters, filter_size=filter_size, pool_size=pool_size, hidden_layer_units=hidden_layer_units)
 
-    for (ct, X) in inputs: # -- enter the training loop 
+    for i in range(1, len(inputs)): # -- enter the training loop 
+
         # -- create loss list for each cell type 
         losses = []
 
@@ -118,7 +135,7 @@ def opt(inputs:list, pos_weights, num_epochs, model_path, device, width, num_fil
         model.eval()
 
         # -- set up custom parameter group for optimizer
-        s = X[0]
+        s = inputs[i][0]
         s.requires_grad_(True)
         bin_list = {s}
 
@@ -133,9 +150,9 @@ def opt(inputs:list, pos_weights, num_epochs, model_path, device, width, num_fil
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
 
         for epoch in range(num_epochs):
-            samples = X[0].permute(1,0)
+            samples = inputs[i][0].permute(1,0)
             samples = samples.to(device)
-            labels = X[1][0]
+            labels = inputs[i][1][0]
             labels = labels.to(device)
             model.to(device)
             predicted = model(samples)
@@ -151,29 +168,28 @@ def opt(inputs:list, pos_weights, num_epochs, model_path, device, width, num_fil
         #-- get the output
         pg = optimizer.param_groups
         output = pg[0]['params'][0].detach().numpy() 
-        outputs_dict[ct] = output
-        loss_dict[ct] = losses
-        expressions_dict[ct] = X[1][0].item()
+        outputs_dict[ct].append(output)
+        loss_dict[ct].append(losses)
+        expressions_dict[ct].append(inputs[i][1][0].item())
 
     return outputs_dict, loss_dict, expressions_dict
 
-def norm(raw_outputs_dict):
+def norm(raw_outputs_tuple, ct):
     all_normalized_arrs = {}
 
     # -- get the maximum of all the features 
     curr_max = 0
-    for ignore, raw_output_array in raw_outputs_dict.items():
-        for sub_array in raw_output_array:
-            if np.amax(sub_array, axis=0) > curr_max:
-                curr_max = np.amax(sub_array, axis=0) 
+    for sub_array in raw_outputs_tuple:
+        if np.amax(sub_array, axis=0) > curr_max:
+            curr_max = np.amax(sub_array, axis=0) 
 
-    for ct, raw_output_array in raw_outputs_dict.items():
-        norm_array = []
-        for sub_array in raw_output_array:
-            normalized = np.clip(sub_array / curr_max, 0, 1) # -- clamp to range of [0,1] and normalize with max
-            norm_array.append(normalized)
-        norm_array = np.array(norm_array)
-        all_normalized_arrs[ct] = norm_array
+    norm_array = []
+    for sub_array in raw_outputs_tuple:
+        normalized = np.clip(sub_array / curr_max, 0, 1) # -- clamp to range of [0,1] and normalize with max
+        norm_array.append(normalized)
+    norm_array = np.array(norm_array)
+
+    all_normalized_arrs[ct] = norm_array
 
     return all_normalized_arrs
 
@@ -208,7 +224,7 @@ def plot_heatmap(cell_type, all_normalized_arrs, mods_to_frequencies, color_list
 
     # -- save the file to specified output folder
     if o_dir != 'DELETE':
-        plt.savefig(f'{o_dir}/{cell_type}_heatmap.png')
+        plt.savefig(f'{o_dir}/{cell_type}_{expression_val}_heatmap.png')
     
 # == optional function for plotting loss (atm evidently all over the place)
 def plot_loss(cell_type, num_epochs, loss):
@@ -254,30 +270,35 @@ def main():
         data_outputs, pos_weights = load_data(ds=dirs, ct=all_cell_types[marker])
         width, hidden_layer_units, num_filters, filter_size, pool_size, num_epochs, learning_rate = set_hyperparams(num_windows=100, n_e=num_epochs, hp_specs=hp_specs)
         outputs_dict, loss_dict, expressions_dict = opt(inputs=data_outputs, pos_weights=pos_weights, num_epochs=num_epochs, model_path=model_path, device=device, width=width, num_filters=num_filters, filter_size=filter_size, pool_size=pool_size, hidden_layer_units=hidden_layer_units)
-        all_normalized_dict = norm(raw_outputs_dict=outputs_dict)
         
         # -- define parameters for plotting functions
         histone_mods = ['H3K27me3 (R)', 'H3K36me3 (P)','H3K4me1 (DP)', 'H3K4me3 (P)', 'H3K9me3 (R)']
         bins = np.linspace(0, 99, 100).astype(int)
 
-        # -- plot everything 
-        d = np.swapaxes(all_normalized_dict[all_cell_types[marker]], 1, 0)
-        mods_to_frequencies = []
-        for row in d:
-            frequency = 0
-            for bins in row:
-                if bins >= 0.25:   
-                    frequency+=1
-            mods_to_frequencies.append(frequency) 
-        avg = np.mean(mods_to_frequencies)
-        color_list = []
-        for frequencies in mods_to_frequencies:
-            if frequencies > avg:
-                color_list.append("black")
-            elif frequencies < avg:
-                color_list.append("gray")
-        plot_heatmap(cell_type=all_cell_types[marker], all_normalized_arrs=d, mods_to_frequencies=mods_to_frequencies, color_list=color_list, 
-                    histone_mods=histone_mods, bins=bins, expression_val=expressions_dict[all_cell_types[marker]], o_dir=output_dir)
+        for ct, raw_output_list in outputs_dict.items():
+            for idx, item in enumerate(raw_output_list): 
+                # -- normalize the outputs 
+                all_normalized_dict = norm(raw_outputs_tuple=item, ct=ct)
+                
+                # -- plot everything 
+                d = np.swapaxes(all_normalized_dict[ct], 1, 0)
+                mods_to_frequencies = []
+                for row in d:
+                    frequency = 0
+                    for bins in row:
+                        if bins >= 0.25:   
+                            frequency+=1
+                    mods_to_frequencies.append(frequency) 
+                avg = np.mean(mods_to_frequencies)
+                color_list = []
+                for frequencies in mods_to_frequencies:
+                    if frequencies > avg:
+                        color_list.append("black")
+                    elif frequencies < avg:
+                        color_list.append("gray")
+
+                plot_heatmap(cell_type=ct, all_normalized_arrs=d, mods_to_frequencies=mods_to_frequencies, color_list=color_list, 
+                            histone_mods=histone_mods, bins=bins, expression_val=expressions_dict[ct][idx], o_dir=output_dir)
 
         # -- update the marker 
         marker+=1
