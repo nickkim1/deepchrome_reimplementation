@@ -16,6 +16,22 @@ import argparse as ap
 
 def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path): 
 
+    """
+    ** This is a script for running the core Deepchrome model and generating associated statistics. 
+
+    This is a wrapper function around the core of model training and evaluation. This includes: 
+    - Dataloading: see first function
+    - Data preprocessing: see HistoneDataset and BatchSampler
+    - Model definition
+    - Model training
+    - Model evaluation
+    - Model figure plotting: namely loss, auc/roc, confusion matrix metrics
+    """
+
+    ##########################################################################################
+    # DATA LOADING
+    ##########################################################################################
+
     training_ds = tr_ds
     valid_ds = v_ds
     testing_ds = te_ds
@@ -59,6 +75,10 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
     print(f"4. The number of ones is {num_ones} and the number of zeros is {num_zeros}")
     print(f"5. The ratio of negative : positive examples is {pos_weights}")
     print("===================================")
+
+    ##########################################################################################
+    # DATA PREPROCESSING AND DATASET DEFINITION
+    ##########################################################################################
 
     class HistoneDataset(Dataset):
         def __init__(self, file_path): 
@@ -127,6 +147,10 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
         valid_dataloader = DataLoader(dataset=valid_dataset, batch_size=100, shuffle=False, drop_last=False) 
     n_total_steps = len(training_dataloader)
 
+    ##########################################################################################
+    # MODEL DEFINITION
+    ##########################################################################################
+
     # - hyperparameters
     # -- entire model
     learning_rate = 0.001
@@ -181,6 +205,10 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer=optimizer, factor=1e-7)
 
+    ##########################################################################################
+    # MODEL PLOTTING DEFINITIONS
+    ##########################################################################################
+
     # -- functions for plotting the loss, accuracy, CM, and ROC curve
     f, a = plt.subplots(2, 2, figsize=(10,7.5), layout='constrained')
 
@@ -230,6 +258,9 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
         if o_dir != 'DELETE':
             plt.savefig(f'{output_dir}/{cell_type}.png')
 
+    ##########################################################################################
+    # MODEL TEST LOOP
+    ##########################################################################################
 
     def test_model(log):
 
@@ -339,6 +370,10 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
         
         return fpr, tpr, auc, df_cm, evaluation_time_list
 
+    ##########################################################################################
+    # MODEL TRAIN LOOP
+    ##########################################################################################
+
     def train_model():
 
         # -- create training time list
@@ -424,6 +459,10 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
         # -- return log for the testing procedure 
         return log, training_time_list
     
+    ##########################################################################################
+    # MODEL EVALUATION WRAPPER: runs train, test functions then plots
+    ##########################################################################################
+    
     def evaluate():
         log, training_time_list = train_model()
         fpr, tpr, auc, df_cm, evaluation_time_list = test_model(log)
@@ -470,8 +509,7 @@ def main():
         # -- 3. hyperparameters to use 
         # -- 4. ** to add later -- which model / n units to use 
 
-    parser = ap.ArgumentParser(prog='Reimplementation of Deepchrome!', 
-                               description='[1] Written in Pytorch. [2] All files must be titled train.csv, test.csv, or valid.csv. [3] All cell types should have respective directory named after them.')
+    parser = ap.ArgumentParser(prog='Reimplementation of Deepchrome!', description='[1] Written in Pytorch. [2] All files must be titled train.csv, test.csv, or valid.csv. [3] All cell types should have respective directory named after them.')
     parser.add_argument('-d', type=str, help='-> input name of dataset directory to use', nargs=1)
     parser.add_argument('-tv', type=str, help='-> input test or valid', nargs=1)
     parser.add_argument('-s', type=str, help='-> input Y or N', nargs=1)
