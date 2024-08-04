@@ -11,6 +11,11 @@ import math
 import scipy 
 import os
 
+##############################################################################################################
+
+# remaining todos: 
+# -- 1. fix the weird shape of the feature maps graph (why is it flipped ?)
+
 def set_device():
      # -- set the device used
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -36,7 +41,7 @@ def load_data(datasets:list):
             if xy[i][num_cols-1]==1:
                 num_ones += 1
             if (i+1) % num_windows==0:
-                data[marker]=(xy[i-99:i+1,2:num_cols-1], xy[i-99:i+1,[num_cols-1]]) # (features, labels
+                data[marker]=(xy[i-99:i+1,2:num_cols-1], xy[i-99:i+1,[num_cols-1]]) # (features, labels) 
                 # print(data[marker][0][0], data[marker][1][0])
                 marker+=1 
         pos_weights = torch.tensor([num_zeros / num_ones])
@@ -73,11 +78,10 @@ class ConvNet(nn.Module):
         return x
 
 
-def set_hyperparams(num_windows, n_e, hp_specs):
+def set_hyperparams(num_windows, hp_specs):
     # -- spec values 
     width = num_windows
     learning_rate = 0.001
-    num_epochs = n_e
     num_filters = 50
     hidden_layer_units = {"first": 625, "second": 125}
 
@@ -94,7 +98,7 @@ def set_hyperparams(num_windows, n_e, hp_specs):
         filter_size = 10 
         pool_size = 2
 
-    return width, hidden_layer_units, num_filters, filter_size, pool_size, num_epochs, learning_rate
+    return width, hidden_layer_units, num_filters, filter_size, pool_size, learning_rate
 
 # -- function for extracting bin specific scores
 def extract_features(device, inputs:list, ct, model_path, width, num_filters, filter_size, pool_size, hidden_layer_units):
@@ -126,6 +130,12 @@ def extract_features(device, inputs:list, ct, model_path, width, num_filters, fi
             all_features.append(conv_output)
     return all_features
 
+# -- for testing purposes
+def relu(x):
+    if x > 0:
+        return x
+    else:
+        return 0
 
 def plot_feat_map(mean_of_bin_list, bin_number_list, o_dir):
     f, a = plt.subplots(layout='constrained') 
@@ -147,14 +157,12 @@ def main():
     parser = ap.ArgumentParser(prog='Visualization of Deepchrome!', description='Please specify the cell-types to visualize below.')
     parser.add_argument('-d', type=str, help='-> input name of dataset directory to use', nargs=1)
     parser.add_argument('-sm', type=str, help= '-> input name of folder where saved model params are located')
-    parser.add_argument('-e', type=int, help='-> input number of epochs that the model should optimize through', nargs=1)
     parser.add_argument('-hp', type=int, help='-> input 1 for (5,2) 2 for (5,5) 3 for (10,2) 4 for (10,5) to specify hp',default=4)
     parser.add_argument('-o',type=str, help='-> input name of folder where results should be saved')
     args = vars(parser.parse_args())
 
     # -- set necessary parameters from parsed in information
     data_directory = args['d'][0]
-    num_epochs = args['e'][0]
     model_path = args['sm']
     hp_specs = args['hp']
     output_dir = args['o']
@@ -172,7 +180,7 @@ def main():
     # -- run the functions proper with parsed in data from above
     device = set_device()
     data_outputs, pos_weights = load_data(datasets=eval_datasets)
-    width, hidden_layer_units, num_filters, filter_size, pool_size, num_epochs, learning_rate = set_hyperparams(num_windows=100, n_e=num_epochs, hp_specs=hp_specs)
+    width, hidden_layer_units, num_filters, filter_size, pool_size, learning_rate = set_hyperparams(num_windows=100, hp_specs=hp_specs)
 
     # -- iterate over cell types and get feature map measurements
     for ct in all_cell_types:
@@ -181,13 +189,14 @@ def main():
         for ct_feat in all_features:
             # -- each output of convolution is (50, 91). create graph of each bin (91) post convolution
             flipped_ct_feat = ct_feat.permute(1,0)
-            max_of_bin_list = []
+            # print(ct_feat)
+            avg_of_bin_list = []
             for ignore, bin_tensor in enumerate(flipped_ct_feat): # -- i want to get tensors along the 1, not 0, axis from original
-                max_of_bin = max(bin_tensor)
-                max_of_bin_list.append(max_of_bin)
+                avg_of_bin = relu(np.max(bin_tensor.cpu().detach().numpy()))
+                avg_of_bin_list.append(avg_of_bin)
 
     # -- pass in both lists to the plot function to plot 
-    mean_of_bin_list = np.array(max_of_bin_list) / len(all_cell_types)
+    mean_of_bin_list = np.array(avg_of_bin_list) / len(all_cell_types)
     bin_number_list = np.linspace(0,90,91)
     plot_feat_map(mean_of_bin_list=mean_of_bin_list, bin_number_list=bin_number_list, o_dir=output_dir)
 

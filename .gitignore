@@ -1,0 +1,10 @@
+# Ignore all saved models 
+*.pth
+
+# Ignore the real data
+real_data/
+
+# Push up the old scripts too
+
+# Ignore pycache 
+__pycache__/

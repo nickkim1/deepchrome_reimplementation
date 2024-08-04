@@ -81,9 +81,7 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
             classes = []
             for idx, gene_id in enumerate(self.gene_ids):
                 if idx % num_windows == 0:
-                    # print('gene id: ', gene_id.item(), 'other: ', xy[idx, 0]) -- qc
                     classes.append(int(gene_id.item()))
-                    # self.indices[int(gene_id.item())] = self.f[int(gene_id.item())]
                     self.indices[int(gene_id.item())] = np.arange(idx-100, idx, 1)
             self.classes = classes
             self.n_samples = num_rows 
@@ -119,6 +117,7 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
     # -- create the datasets -- histone dataset 
     training_dataset = HistoneDataset(training_ds)
     training_dataloader = DataLoader(dataset=training_dataset, batch_sampler=BSampler(gene_ids=training_dataset.gene_ids_and_indices()[0], indices=training_dataset.gene_ids_and_indices()[1], batch_size=100))
+
     if not v_ds: 
         test_dataset = HistoneDataset(testing_ds)
         test_dataloader = DataLoader(dataset=test_dataset, batch_size=100, shuffle=False, drop_last=False)
@@ -160,23 +159,34 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
             self.fc1 = nn.Linear(math.ceil((num_windows-filter_size)/pool_size)*num_filters, hidden_layer_units["first"])
             self.fc2 = nn.Linear(hidden_layer_units["first"], hidden_layer_units["second"])
             self.fc3 = nn.Linear(hidden_layer_units["second"], 2)
+            # self.sm = nn.LogSoftmax(dim=1)
         def forward(self, x): 
+            print('very first input: ', x.unsqueeze(0).shape)
             x = self.conv(x)
+            print('first conv layer: ', x.shape)
             x = F.relu(x)
+            # print('first relu: ', x.shape)
             x = self.pool(x)
+            # print('max pooling: ', x.shape)
             x = x.view(math.ceil((num_windows-filter_size)/pool_size)*num_filters)
+            # print('flattened: ', x.unsqueeze(0).shape)
             x = self.dropout(x)
+            # print('dropout: ', x.unsqueeze(0).shape)
             x = self.fc1(x)
             x = F.relu(x)
+            # print('second relu + first linear: ', x.unsqueeze(0).shape)
             x = self.fc2(x)
             x = F.relu(x)
+            # print('third relu + second linear: ', x.unsqueeze(0).shape)
             x = self.fc3(x) 
+            # print('last linear: ', x.unsqueeze(0).shape)
             x = x.unsqueeze(0)
             x = F.log_softmax(x, dim=1)
             return x
 
     # -- create instance of model, create loss and optimization functions 
     model = ConvNet().to(device)
+    # criterion = nn.NLLLoss()
     criterion = nn.NLLLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer=optimizer, factor=1e-7)
@@ -230,119 +240,14 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
         if o_dir != 'DELETE':
             plt.savefig(f'{output_dir}/{cell_type}.png')
 
+    def evaluate():
 
-    def test_model(log):
-
-        # define testing params: ROC, confusion matrix, evaluation time 
+        # -- create lists for calculating confusion matrices, ROC curves, training time elapsed, evaluation time elapsed
         target_scores = []
         cm_scores = []
         predicted_scores = []
-        evaluation_time_list = []
-        n_samples = num_genes
-
-        model.load_state_dict(torch.load(f'{model_path}/{c_type}_params.pth'))
-
-        for epoch in range(num_epochs):
-            
-            # switch the model to evaluation mode for specific layers -- dropout, etc 
-            model.eval() 
-
-            # for accuracy measurements
-            vt_n_correct = 0
-
-            # set the proper dataloader 
-            if not v_ds: 
-                vt_dataloader = test_dataloader
-            else:
-                vt_dataloader = valid_dataloader
-
-            # run the validation or testing process
-            with torch.no_grad():
-                # log evaluation loss
-                vt_loss_per_batch = []
-
-                # log start time for evaluation
-                e_start = time.time()
-                for i, (samples, labels) in enumerate(vt_dataloader):
-                    
-                    # -- set samples
-                    samples = samples.permute(1, 0)
-                    samples = samples.to(device) 
-                
-                    # -- set labels 
-                    labels = torch.tensor([labels[0]]).long()
-
-                    labels = labels.to(device)
-                    
-                    # -- send model to the device
-                    model.to(device)
-                    predicted = model(samples)
-
-                    # -- calculate rough approx accuracy 
-                    if torch.argmax(predicted) == 0 and labels.item()==0:
-                        vt_n_correct+=1
-                    if torch.argmax(predicted) == 1 and labels.item()==1:
-                        vt_n_correct+=1
-                    
-                    # # -- y is for ROC and confusion matrix
-                    target_scores.append(labels.item())
-                    # max_index = torch.argmax(predicted).item()
-                    predicted_scores.append(torch.exp(predicted[0][1]).item())
-                    
-                    # -- cm_scores is for confusion matrix
-                    if (torch.argmax(predicted)==0 and labels.item()==0) or (torch.argmax(predicted)==1 and labels.item()==1):
-                        cm_scores.append(1)
-                    else:
-                        cm_scores.append(0)
-                    
-                    # -- calculate the loss
-                    loss = criterion(predicted, labels) 
-                    vt_loss_per_batch.append(loss.item()) # append the loss for all (10) batches
-
-                    if (i+1) % n_batches == 0: # -- this is where the i term above is used in for loop
-                        print (f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{n_total_steps}], Loss: {loss.item():.4f}')
-                
-                # -- calculate average validation loss for each epoch 
-                vt_loss = sum(vt_loss_per_batch) / len(vt_loss_per_batch)
-                log['vt_loss_per_epoch'].append(vt_loss)
-                # print('Validation loss', vt_loss)
-                
-                # -- calculate validation accuracy -- rough approx -- for each epoch 
-                vt_accuracy = vt_n_correct / n_samples
-                log['vt_accuracy_per_epoch'].append(vt_accuracy)
-                # print('Validation accuracy: ', vt_accuracy)
-                
-                # -- calculate end time and elapsed time for evaluation, appending to list 
-                e_end = time.time()
-                e_elapsed = e_end - e_start
-                evaluation_time_list.append(e_elapsed)
-
-        # -- create necessary parameters for plotting 
-        target_scores = np.asarray(target_scores, dtype=np.int32)
-        predicted_scores = np.asarray(predicted_scores, dtype=np.float32)
-        # print(predicted_scores)
-        fpr, tpr, thresholds_ignore = metrics.roc_curve(target_scores, predicted_scores, pos_label=1)
-        auc = metrics.roc_auc_score(target_scores, predicted_scores)
-        cf_matrix = np.array(metrics.confusion_matrix(target_scores, cm_scores))
-
-        # -- have to swap around the cells -- was wrong! 
-        temp = cf_matrix[0][1]
-        cf_matrix[0][1] = cf_matrix[0][0]
-        cf_matrix[0][0] = temp
-
-        # -- set classes 
-        classes = {0, 1}
-
-        # -- convert the numpy array for the confusion matrix -> pandas dataframe 
-        df_cm = pd.DataFrame(cf_matrix / np.sum(cf_matrix, axis=1)[:, None], index = [i for i in classes],
-                        columns = [i for i in classes])
-        
-        return fpr, tpr, auc, df_cm, evaluation_time_list
-
-    def train_model():
-
-        # -- create training time list
         training_time_list = []
+        evaluation_time_list = []
         
         # -- set log for necessary values
         log = {
@@ -352,6 +257,13 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
             'vt_accuracy_per_epoch':[]
         }
 
+        # -- randomly initialize the parameters ? 
+        def init_weights(m):
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv1d):
+                torch.nn.init.xavier_uniform_(m.weight)
+                m.bias.data.fill_(0.01)
+        model.apply(init_weights)
+
         # -- run the model over several (specified number of) epochs 
         for epoch in range(num_epochs):
 
@@ -360,6 +272,7 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
 
             # -- vars for accuracy measurements 
             t_n_correct = 0
+            vt_n_correct = 0
             n_samples = num_genes
             
             # -- create list for keeping track of training loss per batch
@@ -409,24 +322,106 @@ def run_all(tr_ds, v_ds, te_ds, o_dir, c_type, n_epochs, model_path):
             # -- calculate training accuracy -- rough approx -- with just givens 
             t_accuracy = t_n_correct / n_samples
             log['training_accuracy_per_epoch'].append(t_accuracy)
+            # print(t_accuracy)
 
             # -- calculate end time and elapsed time for training, appending to list
             t_end = time.time()
             t_elapsed = t_end - t_start
             training_time_list.append(t_elapsed)
 
+             # -- save the model if specified to do so
+            # print('before', next(model.parameters()).device)
+            if model_path != '': 
+                PATH = f'{model_path}/{cell_type}_params.pth'
+            torch.save(model.state_dict(), PATH) # -- save the model's params 
+            # print('after', next(model.parameters()).device)
 
-        # -- save the model if specified to do so (i was stupid, was saving at every epoch)\
-        if model_path != '': 
-            PATH = f'{model_path}/{cell_type}_params.pth'
-        torch.save(model.state_dict(), PATH) # -- save the model's params 
+            # -- switch the model to evaluation mode for specific layers -- dropout, etc 
+            model.eval() 
 
-        # -- return log for the testing procedure 
-        return log, training_time_list
-    
-    def evaluate():
-        log, training_time_list = train_model()
-        fpr, tpr, auc, df_cm, evaluation_time_list = test_model(log)
+            # set the proper dataloader 
+            if not v_ds: 
+                vt_dataloader = test_dataloader
+            else:
+                vt_dataloader = valid_dataloader
+
+            # run the validation or testing process
+            with torch.no_grad():
+                # log evaluation loss
+                vt_loss_per_batch = []
+                # log start time for evaluation
+                e_start = time.time()
+                for i, (samples, labels) in enumerate(vt_dataloader):
+                    
+                    # -- set samples
+                    samples = samples.permute(1, 0)
+                    samples = samples.to(device) 
+                
+                    # -- set labels 
+                    labels = torch.tensor([labels[0]]).long()
+
+                    labels = labels.to(device)
+                    
+                    # -- send model to the device
+                    model.to(device)
+                    predicted = model(samples)
+
+                    # -- calculate rough approx accuracy 
+                    if torch.argmax(predicted) == 0 and labels.item()==0:
+                        vt_n_correct+=1
+                    if torch.argmax(predicted) == 1 and labels.item()==1:
+                        vt_n_correct+=1
+                    
+                    # # -- y is for ROC and confusion matrix
+                    target_scores.append(labels.item())
+                    # max_index = torch.argmax(predicted).item()
+                    predicted_scores.append(torch.exp(predicted[0][1]).item())
+                    
+                    # -- cm_scores is for confusion matrix
+                    if (torch.argmax(predicted)==0 and labels.item()==0) or (torch.argmax(predicted)==1 and labels.item()==1):
+                        cm_scores.append(1)
+                    else:
+                        cm_scores.append(0)
+                    
+                    # -- calculate the loss
+                    loss = criterion(predicted, labels) 
+                    vt_loss_per_batch.append(loss.item()) # append the loss for all (10) batches
+                
+                # -- calculate average validation loss for each epoch 
+                vt_loss = sum(vt_loss_per_batch) / len(vt_loss_per_batch)
+                log['vt_loss_per_epoch'].append(vt_loss)
+                # print('Validation loss', vt_loss)
+                
+                # -- calculate validation accuracy -- rough approx -- for each epoch 
+                vt_accuracy = vt_n_correct / n_samples
+                log['vt_accuracy_per_epoch'].append(vt_accuracy)
+                # print('Validation accuracy: ', vt_accuracy)
+                
+                # -- calculate end time and elapsed time for evaluation, appending to list 
+                e_end = time.time()
+                e_elapsed = e_end - e_start
+                evaluation_time_list.append(e_elapsed)
+
+        # -- create necessary parameters for plotting 
+        target_scores = np.asarray(target_scores, dtype=np.int32)
+        print(target_scores)
+        predicted_scores = np.asarray(predicted_scores, dtype=np.float32)
+        # print(predicted_scores)
+        fpr, tpr, thresholds = metrics.roc_curve(target_scores, predicted_scores, pos_label=1)
+        auc = metrics.roc_auc_score(target_scores, predicted_scores)
+        cf_matrix = np.array(metrics.confusion_matrix(target_scores, cm_scores))
+
+        # -- have to swap around the cells -- was wrong! 
+        temp = cf_matrix[0][1]
+        cf_matrix[0][1] = cf_matrix[0][0]
+        cf_matrix[0][0] = temp
+
+        # -- set classes 
+        classes = {0, 1}
+
+        # -- convert the numpy array for the confusion matrix -> pandas dataframe 
+        df_cm = pd.DataFrame(cf_matrix / np.sum(cf_matrix, axis=1)[:, None], index = [i for i in classes],
+                        columns = [i for i in classes])
 
         # --plot loss, accuracy, ROC curve, and create confusion matrix
         plot_all(num_epochs=np.linspace(1, num_epochs, num=num_epochs).astype(int), training_loss=log['training_loss_per_epoch'], 
@@ -523,12 +518,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-# old code: 
-# -- randomly initialize the parameters? actually works better if i don't for other models 
-# def init_weights(m):
-#     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv1d):
-#         torch.nn.init.xavier_uniform_(m.weight)
-#         m.bias.data.fill_(0.01)
-# model.apply(init_weights)

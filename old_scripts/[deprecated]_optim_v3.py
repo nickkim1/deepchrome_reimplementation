@@ -8,6 +8,7 @@ import argparse as ap
 import time as time
 import random
 import math
+import scipy 
 import os
 
 def set_device():
@@ -27,12 +28,16 @@ def load_data(ct, ds):
     num_genes = num_rows / num_windows
     marker = 0 
     data = {}
+    l = {}
     num_zeros = 0
     num_ones = 0
 
     # -- set entries for data
     data[0] = []
     data[1] = []
+    
+    l[0] = []
+    l[1] = []
 
     for i in range(len(xy)):
         if xy[i][num_cols-1]==0:
@@ -42,26 +47,25 @@ def load_data(ct, ds):
         if (i+1) % num_windows==0:
             if xy[i][num_cols-1]==0:
                 data[0].append((xy[i-99:i+1,2:num_cols-1], xy[i-99:i+1,[num_cols-1]]))
+                l[0].append(xy[i-99:i+1,2:num_cols])
             if xy[i][num_cols-1]==1:
                 data[1].append((xy[i-99:i+1,2:num_cols-1], xy[i-99:i+1,[num_cols-1]]))
+                l[1].append(xy[i-99:i+1,2:num_cols])
 
     pos_weights = torch.tensor([num_zeros / num_ones])
-    random_zero_idx = random.randint(0, len(data[0])-1)
-    random_one_idx = random.randint(0, len(data[1])-1)
+    # random_zero_idx = random.randint(0, len(data[0])-1)
+    # random_one_idx = random.randint(0, len(data[1])-1)
     inputs.append(ct) # -- use cell type to mark each input 
-    # inputs.append(data[0][random_zero_idx])
-    # print(data[0][random_zero_idx].shape)
-    #print(torch.rand(100,5))
-    inputs.append((torch.rand(100,5), torch.zeros(100,1)))
-    inputs.append((torch.rand(100,5), torch.ones(100,1)))
-    # inputs.append(data[1][random_one_idx])
-    # print(inputs[0][1][0][0])
+    inputs.append(l[0])
+    inputs.append(l[1])
+    print(len(inputs))
+    print('zeros', num_zeros)
+    print('ones', num_ones)
     return inputs, pos_weights
 
 def set_hyperparams(num_windows, n_e, hp_specs):
     # -- spec values 
     width = num_windows
-    learning_rate = 0.001
     num_epochs = n_e
     num_filters = 50
     hidden_layer_units = {"first": 625, "second": 125}
@@ -79,7 +83,7 @@ def set_hyperparams(num_windows, n_e, hp_specs):
         filter_size = 10 
         pool_size = 2
 
-    return width, hidden_layer_units, num_filters, filter_size, pool_size, num_epochs, learning_rate
+    return width, hidden_layer_units, num_filters, filter_size, pool_size, num_epochs
 
 # -- define convnet class
 class ConvNet(nn.Module):
@@ -100,12 +104,12 @@ class ConvNet(nn.Module):
         x = F.relu(x)
         x = self.pool(x)
         x = x.view(math.ceil((self.width-self.filter_size)/self.pool_size)*self.num_filters)
-        x = self.dropout(x)
+        # x = self.dropout(x)
         x = self.fc1(x)
         x = F.relu(x)
         x = self.fc2(x)
         x = F.relu(x)
-        x = self.fc3(x) 
+        x = self.fc3(x)
         return x
 
 
@@ -128,88 +132,101 @@ def opt(inputs:list, pos_weights, num_epochs, model_path, device, width, num_fil
     # -- create the model 
     model = ConvNet(width=width, num_filters=num_filters, filter_size=filter_size, pool_size=pool_size, hidden_layer_units=hidden_layer_units)
 
-    for i in range(1, len(inputs)): # -- enter the training loop 
+    '''
+    Length of inputs list is 3 : cell type, inputs of class 0, inputs of class 1
+    '''
+    for expression_type in range(1, len(inputs)): 
 
         # -- create loss list for each cell type 
         losses = []
-
         # -- load in model's parameters for EACH cell type 
         model.load_state_dict(torch.load(f'{model_path}/{ct}_params.pth'))
         model.eval()
 
-        # -- set up custom parameter group for optimizer
-        s = inputs[i][0]
-        s.requires_grad_(True)
-        bin_list = {s}
-
-        # -- set universal hyperparams for all cell types 
-        
-        # -- set optimizer and loss function 
-        optimizer = torch.optim.RMSprop(bin_list, lr=0.1, momentum=0.9)
-        # print(optimizer.param_groups)
         pos_weights = pos_weights.to(device)
-        criterion = nn.BCEWithLogitsLoss()
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
 
-        for epoch in range(num_epochs):
-            samples = inputs[i][0].permute(1,0)
-            samples = samples.to(device)
-            labels = inputs[i][1][0]
-            labels = labels.to(device)
-            model.to(device)
-            predicted = model(samples)
-            loss = criterion(predicted, labels) 
+        # -- construct outputs array for holding all outputs 
+        output_arrs = []
 
-            # l2_norm = torch.tensor(0, dtype=float)
+        for opt_input in inputs[expression_type]:  
+            
+            # -- set up custom parameter group for optimizer
+            s = opt_input[:, 0:5]
+            s.requires_grad_(True)
+            bin_list = {s}
 
-            # for parameter in model.parameters():
-                # print(parameter.shape)
-                # l2_norm += (torch.norm(parameter))
-                # print(l2_norm)
-                # print('initial', parameter.grad)
-            # loss += 0.009 * (l2_norm)
+            # -- set optimizer and loss function 
+            optimizer = torch.optim.SGD(bin_list, lr=0.1, momentum=0.9, weight_decay=0.009)
 
-            grads = torch.autograd.grad(loss, samples, create_graph=True)
-            grad_norm = 0 
-            for grad in grads:
-                grad_norm += grad.pow(2).sum()
-                grad=grad + (samples*2*0.009)
-            optimizer.zero_grad()
-            loss=loss + (0.009*(grad_norm).pow(2))
-            loss.backward()
-            optimizer.step()
+            for epoch in range(num_epochs):
+                samples = opt_input[:, 0:5]
+                # print(samples)
+                samples = samples.permute(1,0)
+                samples = samples.to(device)
+                labels = torch.tensor([opt_input[0, 5].item()]).float()
+                # print(labels)
+                labels = labels.to(device)
+                model.to(device)
+                predicted = model(samples)
+                # print(predicted.shape)
+                # print(labels.shape)
+                loss = criterion(predicted, labels)
 
-            # for parameter in model.parameters():
-                # print('parameter', parameter)
-                # if (epoch+1) % 100 == 0:
+                # l2_lambda = 0.009
+                # l2_norm = torch.tensor(0, dtype=float)
+                # grads = []
+                # print(model.parameters().shape)
+                # for parameter in model.parameters():
+                    # print(parameter.shape)
+                    # l2_norm += torch.norm(parameter)
+                    # print(l2_norm)
                     # print('initial', parameter.grad)
-                # parameter.grad = parameter.grad + (parameter * 2 * 0.009)
-                # if (epoch+1) % 100 == 0:
+                # loss += l2_lambda * (l2_norm)
+
+                # -- zero gradients
+                optimizer.zero_grad()
+
+                # -- get grads
+                loss.backward()
+                
+                # for parameter in model.parameters():
+                    # print('parameter', parameter)
+                    # print('initial', parameter.grad)
+                    # parameter.grad = parameter.grad + (parameter * 2 * l2_lambda)
                     # print('final', parameter.grad)
 
-            # -- print the loss
-            if (epoch + 1) % 100 == 0:
-                print (f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
-            losses.append(loss.item())
+                # -- step 
+                optimizer.step()
+                # -- print the loss
+                # print (f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
+                losses.append(loss.item())
         
-        #-- get the output
-        pg = optimizer.param_groups
-        # print(pg)
-        output = pg[0]['params'][0].detach().numpy() 
-        # print(s)
-        outputs_dict[ct].append(output)
-        loss_dict[ct].append(losses) # append losses for each expression type 
-        expressions_dict[ct].append(inputs[i][1][0].item())
+            #-- get the output, for each output listed 
+            pg = optimizer.param_groups
+            output = pg[0]['params'][0].detach().numpy() 
+            # print(np.shape(output))
+            # print(output)
+            output_arrs.append(output)
 
-    return outputs_dict, loss_dict, expressions_dict
+        # print(np.shape(np.array(output_arrs)))
+        # print(outputs_arr)
+        # print(np.shape(np.array(output_arrs)))
+        # print(np.mean(np.array(output_arrs), axis=0))
+        # outputs_dict[ct].append(np.mean(np.array(output_arrs), axis=0)) # <-- fix
+        # loss_dict[ct].append(losses) # <-- fix
+        expressions_dict[ct].append(inputs[expression_type][0][0,5].item()) # <-- fix
+
+    return outputs_dict, expressions_dict
 
 def norm(raw_outputs_tuple, ct):
     all_normalized_arrs = {}
 
     # -- get the maximum of all the features 
-    curr_max = np.max(raw_outputs_tuple)
-    # for sub_array in raw_outputs_tuple:
-    #     if np.amax(sub_array, axis=0) > curr_max:
-    #         curr_max = np.amax(sub_array, axis=0) 
+    curr_max = 0
+    for sub_array in raw_outputs_tuple:
+        if np.amax(sub_array, axis=0) > curr_max:
+            curr_max = np.amax(sub_array, axis=0) 
 
     norm_array = []
     for sub_array in raw_outputs_tuple:
@@ -219,30 +236,7 @@ def norm(raw_outputs_tuple, ct):
 
     all_normalized_arrs[ct] = norm_array
 
-    # # -- get the maximum of all the features 
-    # curr_max = np.max(raw_outputs_tuple)
-    # print(curr_max)
-    # # for sub_array in raw_outputs_tuple:
-    # #     if np.amax(sub_array, axis=0) > curr_max:
-    # #         curr_max = np.amax(sub_array, axis=0) 
-
-    # norm_array = []
-    # for i in range(100):
-    #     summed_array = np.sum(raw_outputs_tuple[i])
-    #     if summed_array == 0: 
-    #         raw_outputs_tuple[i] = torch.zeros(5)
-    #     else:
-    #         for j in range(5):
-    #             if raw_outputs_tuple[i][j] < 0:
-    #                 raw_outputs_tuple[i][j] = 0
-    #             raw_outputs_tuple[i][j] = raw_outputs_tuple[i][j] / curr_max
-    #     normalized = raw_outputs_tuple[i] # -- clamp to range of [0,1] and normalize with max
-    #     print(normalized)
-    #     norm_array.append(normalized)
-    # norm_array = np.array(norm_array)
-
-    # all_normalized_arrs[ct] = norm_array
-
+    # print(all_normalized_arrs)
     return all_normalized_arrs
 
 def plot_heatmap(cell_type, all_normalized_arrs, mods_to_frequencies, color_list, histone_mods, bins, expression_val, o_dir):
@@ -279,16 +273,17 @@ def plot_heatmap(cell_type, all_normalized_arrs, mods_to_frequencies, color_list
         plt.savefig(f'{o_dir}/{cell_type}_{int(expression_val)}_heatmap.png')
     
 # == optional function for plotting loss (atm evidently all over the place)
-def plot_loss(cell_type, num_epochs, loss, o_dir, expression_val):
-    f, a = plt.subplots(layout='constrained') 
-    f.suptitle(f'Evaluation Loss for {cell_type}') 
-    a.plot(num_epochs, loss, label='Loss')
-    a.set_xlabel('Number of Epochs')
-    a.set_ylabel('Loss')
-    a.legend()  
+# def plot_loss(cell_type, num_epochs, loss, expression_val, o_dir):
+#     f, a = plt.subplots(layout='constrained') 
+#     f.suptitle(f'Evaluation Loss for {cell_type} and Expression of {expression_val}') 
+#     a.plot(num_epochs, loss, label='Loss')
+#     a.set_xlabel('Number of Epochs')
+#     a.set_ylabel('Loss')
+#     a.legend()  
 
-    if o_dir != 'DELETE':
-        plt.savefig(f'{o_dir}/{cell_type}_{int(expression_val)}_loss.png')
+#     # -- save the file to specified output folder
+#     if o_dir != 'DELETE':
+#         plt.savefig(f'{o_dir}/{cell_type}_{int(expression_val)}_loss.png')
 
 def main():
 
@@ -316,32 +311,34 @@ def main():
             lowest_dirs.append(root)
             
     all_cell_types = next(os.walk(data_directory))[1] # -- this obtains the cell types
-    eval_datasets = [] # -- list of the (ct, corres. to lowest possible directory) -- without reaching into files
-
     marker = 0
-    for dirs in lowest_dirs:
+    total_num_repressors_correct = 0 
+    total_num_promoters_correct = 0
 
+    for dirs in lowest_dirs:
         # -- run the functions proper with parsed in data from above
         device = set_device()
         data_outputs, pos_weights = load_data(ds=dirs, ct=all_cell_types[marker])
-        width, hidden_layer_units, num_filters, filter_size, pool_size, num_epochs, learning_rate = set_hyperparams(num_windows=100, n_e=num_epochs, hp_specs=hp_specs)
-        outputs_dict, loss_dict, expressions_dict = opt(inputs=data_outputs, pos_weights=pos_weights, num_epochs=num_epochs, model_path=model_path, device=device, width=width, num_filters=num_filters, filter_size=filter_size, pool_size=pool_size, hidden_layer_units=hidden_layer_units)
+        width, hidden_layer_units, num_filters, filter_size, pool_size, num_epochs = set_hyperparams(num_windows=100, n_e=num_epochs, hp_specs=hp_specs)
+        outputs_dict, expressions_dict = opt(inputs=data_outputs, pos_weights=pos_weights, num_epochs=num_epochs, model_path=model_path, device=device, width=width, num_filters=num_filters, filter_size=filter_size, pool_size=pool_size, hidden_layer_units=hidden_layer_units)
         
         # -- define parameters for plotting functions
         histone_mods = ['H3K27me3 (R)', 'H3K36me3 (P)','H3K4me1 (DP)', 'H3K4me3 (P)', 'H3K9me3 (R)']
         bins = np.linspace(0, 99, 100).astype(int)
-
-        total_num_repressors_correct=0
-        total_num_promoters_correct=0
+        
+        # -- define parameters for stdout
         n_rep = []
         n_prom = []
 
+        # print(outputs_dict)
+
         for ct, raw_output_list in outputs_dict.items():
             for idx, item in enumerate(raw_output_list): 
+
                 # -- normalize the outputs 
                 all_normalized_dict = norm(raw_outputs_tuple=item, ct=ct)
                 
-                # -- plot everything 
+                # -- get plot params 
                 d = np.swapaxes(all_normalized_dict[ct], 1, 0)
                 mods_to_frequencies = []
                 for row in d:
@@ -349,23 +346,33 @@ def main():
                     for bins in row:
                         if bins >= 0.25:   
                             frequency+=1
-                    mods_to_frequencies.append(frequency) 
-               
+                    mods_to_frequencies.append(frequency)
+
+                print(mods_to_frequencies)
                 avg = np.mean(mods_to_frequencies)
                 color_list = []
+
                 for mod, frequencies in enumerate(mods_to_frequencies):
-                    if frequencies > avg:
+                    # -- set colors 
+                    if frequencies >= avg:
+                        # print(frequencies)
                         color_list.append("black")
-                    if frequencies <= avg:
+                    if frequencies < avg:
                         color_list.append("gray")
-                    if frequencies > avg and (mod == 1 or mod == 2 or mod == 3) and expressions_dict[ct][idx] == 0:
+                    if frequencies >= avg and (mod == 1 or mod == 2 or mod == 3) and expressions_dict[ct][idx] == 0:
                         n_rep.append(mod)
-                    if frequencies > avg and (mod == 0 or mod == 4) and expressions_dict[ct][idx] == 1: 
+                    if frequencies >= avg and (mod == 0 or mod == 4) and expressions_dict[ct][idx] == 1: 
                         n_prom.append(mod)
+                    
+                print(avg, color_list)
 
-                plot_heatmap(cell_type=ct, all_normalized_arrs=d, mods_to_frequencies=mods_to_frequencies, color_list=color_list, histone_mods=histone_mods, bins=bins, expression_val=expressions_dict[ct][idx], o_dir=output_dir)
-                plot_loss(cell_type=ct, num_epochs=np.linspace(1, num_epochs, num_epochs), loss=loss_dict[ct][idx], o_dir=output_dir, expression_val=expressions_dict[ct][idx])
+                # -- plot everything
+                plot_heatmap(cell_type=ct, all_normalized_arrs=d, mods_to_frequencies=mods_to_frequencies, color_list=color_list, 
+                            histone_mods=histone_mods, bins=bins, expression_val=expressions_dict[ct][idx], o_dir=output_dir)
+                # plot_loss(cell_type=ct, num_epochs=np.linspace(1, num_epochs, num=num_epochs).astype(int), loss=loss_dict[ct][idx], expression_val=expressions_dict[ct][idx], o_dir=output_dir)
 
+        print(n_rep)
+        # -- update the totals
         if 1 in n_rep or 2 in n_rep or 3 in n_rep: 
             total_num_repressors_correct+=0
         else:
@@ -375,14 +382,40 @@ def main():
             total_num_promoters_correct+=0
         else:
             total_num_promoters_correct+=1
-
         # -- update the marker 
         marker+=1
 
     print('(Strict) The total percentage of cell types with a correlation with repressor-associated marks is: ', total_num_repressors_correct / len(all_cell_types))
     print('(Strict) The total percentage of cell types with a correlation with promoter-associated marks is: ', total_num_promoters_correct / len(all_cell_types))
-
-
 if __name__ == '__main__':
     main()
-    
+
+
+# OLD CODE
+
+# inputs.append(data[0][random_zero_idx])
+# inputs.append(data[1][random_one_idx])
+# print(np.shape(np.array(data[0])))
+# print(inputs[0][1][0][0])
+# inputs.append(torch.tensor(data[0]))
+# inputs.append(np.array(data[1]))
+
+# l2_lambda = 0.009
+# l2_norm = torch.tensor(0, dtype=float)
+# grads = []
+# print(model.parameters().shape)
+# for parameter in model.parameters():
+    # print(parameter.shape)
+    # l2_norm += torch.norm(parameter)
+    # print(l2_norm)
+    # print('initial', parameter.grad)
+# loss += l2_lambda * (l2_norm)
+
+# for parameter in model.parameters():
+    # print('parameter', parameter)
+    # print('initial', parameter.grad)
+    # parameter.grad = parameter.grad + parameter * 2 * l2_lambda
+    # print('final', parameter.grad)
+
+# print('(Lax) The total percentage of cell types with a correlation with repressor-associated marks is: ', total_num_repressors_correct_2 / len(all_cell_types))
+# print('(Lax) The total percentage of cell types with a correlation with promoter-associated marks is: ', total_num_promoters_correct_2 / len(all_cell_types))
