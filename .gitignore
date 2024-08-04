@@ -4,7 +4,9 @@
 # Ignore the real data
 real_data/
 
-# Push up the old scripts too
+.DS_Store
+.gitignore
 
 # Ignore pycache 
 __pycache__/
+
